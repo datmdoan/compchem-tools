@@ -1,0 +1,4 @@
+%Chk=entry_0_reduced_neutral.chk
+%mem=64GB
+%nprocshared=16
+#P M062X/6-31++G(d,p) Geom=AllCheck Guess=Read SCRF=(SMD,Solvent=Water) 

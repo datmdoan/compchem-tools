@@ -1,0 +1,208 @@
+#!/bin/bash
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=16:mem=64gb
+#PBS -J 1-__TOTAL_MOLECULES__
+#PBS -N gaussian_ion_array
+#PBS -o __RESULTS_DIRECTORY__/o_files
+#PBS -e __RESULTS_DIRECTORY__/e_files
+
+# ── Environment ────────────────────────────────────────────────────────
+module purge
+eval "$(~/anaconda3/bin/conda shell.bash hook)"
+module load Gaussian/16.C.01-AVX2
+source activate autodft
+
+cd __WORKING_DIRECTORY__
+
+# ── Set up scratch ─────────────────────────────────────────────────────
+mkdir -p $TMPDIR/structure_$PBS_ARRAY_INDEX
+cp -r __RESULTS_DIRECTORY__/structure_$PBS_ARRAY_INDEX/* \
+      $TMPDIR/structure_$PBS_ARRAY_INDEX/
+cd $TMPDIR/structure_$PBS_ARRAY_INDEX
+
+# ── Generate Gaussian inputs ──────────────────────────────────────────
+python smiles_to_structure.py ion \
+       -f __CSV_FILE_PATH__ \
+       -i $PBS_ARRAY_INDEX
+
+if ! ls *.gjf 1>/dev/null 2>&1; then
+    echo "[ERROR] No .gjf files were generated."
+    exit 1
+fi
+
+# ── OPT+FREQ calculations ─────────────────────────────────────────────
+for gjf_file in *.gjf; do
+
+    # Skip SPE / resubmission / fallback inputs
+    [[ $gjf_file == *_spe.gjf ]]    && continue
+
+    base_name="${gjf_file%.gjf}"
+    log_file="${base_name}.log"
+    chk_file="${base_name}.chk"
+
+    # 1) Initial M062X OPT+FREQ
+    echo "[ACTION] Running initial M062X calculation for: $gjf_file"
+    g16 < "$gjf_file" > "$log_file"
+
+    fallback_b3lyp="NO"
+    if [ ! -s "$log_file" ]; then
+        echo "[WARN] M062X run produced no output for $gjf_file."
+        fallback_b3lyp="YES"
+    fi
+
+    needs_resubmission="NO"
+    if [ "$fallback_b3lyp" = "NO" ]; then
+        freq_count=$(grep -c "Harmonic frequencies" "$log_file")
+        stationary_count=$(grep -c "Stationary point found." "$log_file")
+        negative_freq=$(grep "Frequencies --" "$log_file" \
+            | awk '{for(i=3;i<=NF;i++) if ($i < 0) print $i}' \
+            | grep -q "-" && echo "YES" || echo "NO")
+
+        if [ "$freq_count" -eq 0 ] || [ "$stationary_count" -lt 2 ] || \
+           [ "$negative_freq" = "YES" ]; then
+            needs_resubmission="YES"
+        fi
+    fi
+
+    # 2) Up to 3 M062X resubmissions
+    resub=0
+    while [ "$fallback_b3lyp" = "NO" ] && \
+          [ "$needs_resubmission" = "YES" ] && \
+          [ "$resub" -lt 3 ]; do
+        resub=$((resub + 1))
+        suffix="_resub"
+        [ "$resub" -gt 1 ] && suffix="_resub${resub}"
+        resub_gjf="${base_name}${suffix}.gjf"
+        resub_log="${base_name}${suffix}.log"
+
+        if [ ! -f "$resub_log" ] || ! grep -q "Normal termination" "$resub_log"; then
+            echo "[ACTION] M062X resubmission $resub for $base_name"
+            cat > "$resub_gjf" << RSUB
+%Chk=$chk_file
+%mem=64GB
+%nprocshared=16
+#P M062X/6-31++G(d,p) Opt=CalcFC Freq Geom=AllCheck Guess=Read 
+RSUB
+            g16 < "$resub_gjf" > "$resub_log"
+        fi
+
+        log_file="$resub_log"
+        freq_count=$(grep -c "Harmonic frequencies" "$resub_log")
+        stationary_count=$(grep -c "Stationary point found." "$resub_log")
+        negative_freq=$(grep "Frequencies --" "$resub_log" \
+            | awk '{for(i=3;i<=NF;i++) if ($i < 0) print $i}' \
+            | grep -q "-" && echo "YES" || echo "NO")
+
+        if [ "$freq_count" -gt 0 ] && [ "$stationary_count" -ge 2 ] && \
+           [ "$negative_freq" = "NO" ]; then
+            echo "[INFO] Converged after resubmission $resub for $base_name."
+            needs_resubmission="NO"
+        fi
+    done
+
+    if [ "$needs_resubmission" = "YES" ]; then
+        fallback_b3lyp="YES"
+    fi
+
+    # 3) B3LYP fallback
+    if [ "$fallback_b3lyp" = "YES" ]; then
+        b3lyp_gjf="${base_name}_b3lyp.gjf"
+        b3lyp_log="${base_name}_b3lyp.log"
+
+        if [ ! -f "$b3lyp_log" ] || ! grep -q "Normal termination" "$b3lyp_log"; then
+            echo "[ACTION] B3LYP fallback for $base_name"
+            cat > "$b3lyp_gjf" << EOF
+%Chk=$chk_file
+%mem=64GB
+%nprocshared=16
+#P B3LYP/6-31++G(d,p) Opt=CalcFC Freq Geom=AllCheck Guess=Read 
+EOF
+            g16 < "$b3lyp_gjf" > "$b3lyp_log"
+        fi
+
+        freq_count_b3=$(grep -c "Harmonic frequencies" "$b3lyp_log")
+        stationary_count_b3=$(grep -c "Stationary point found." "$b3lyp_log")
+        negative_freq_b3=$(grep "Frequencies --" "$b3lyp_log" \
+            | awk '{for(i=3;i<=NF;i++) if ($i < 0) print $i}' \
+            | grep -q "-" && echo "YES" || echo "NO")
+
+        if [ "$freq_count_b3" -gt 0 ] && [ "$stationary_count_b3" -ge 2 ] && \
+           [ "$negative_freq_b3" = "NO" ]; then
+            echo "[INFO] B3LYP fallback converged for $base_name."
+            log_file="$b3lyp_log"
+        else
+            echo "[ERROR] B3LYP fallback failed for $base_name."
+            continue
+        fi
+    fi
+
+    # 4) Final M062X re-run (if B3LYP was used, re-optimise with M062X)
+    if grep -q "Normal termination" "$log_file"; then
+        final_log="$log_file"
+    else
+        final_gjf="${base_name}_final.gjf"
+        final_log="${base_name}_final.log"
+        echo "[ACTION] Final M062X re-run for $base_name"
+        cat > "$final_gjf" << EOF
+%Chk=$chk_file
+%mem=64GB
+%nprocshared=16
+#P M062X/6-31++G(d,p) Opt=CalcFC Freq Geom=AllCheck Guess=Read 
+EOF
+        g16 < "$final_gjf" > "$final_log"
+        if ! grep -q "Normal termination" "$final_log"; then
+            echo "[ERROR] Final M062X re-run failed for $base_name."
+            continue
+        fi
+    fi
+
+done
+
+# ── SPE calculations (SMD water, M062X) ───────────────────────────────
+echo "[INFO] Starting SPE calculations."
+
+for gjf_file in *.gjf; do
+    [[ $gjf_file == *_spe.gjf ]] && continue
+    base_name="${gjf_file%.gjf}"
+    chk_file="${base_name}.chk"
+
+    # Find the best completed log
+    if [ -f "${base_name}_final.log" ]; then
+        ref_log="${base_name}_final.log"
+    else
+        ref_log="${base_name}.log"
+    fi
+
+    if ! grep -q "Normal termination" "$ref_log" 2>/dev/null; then
+        echo "[SKIP] No successful OPT+FREQ for $base_name."
+        continue
+    fi
+
+    spe_gjf="${base_name}_spe.gjf"
+    spe_log="${base_name}_spe.log"
+
+    if [ -f "$spe_log" ] && grep -q "Normal termination" "$spe_log"; then
+        echo "[INFO] SPE already completed for $base_name."
+        continue
+    fi
+
+    cat > "$spe_gjf" << EOF
+%Chk=$chk_file
+%mem=64GB
+%nprocshared=16
+#P M062X/6-31++G(d,p) Geom=AllCheck Guess=Read SCRF=(SMD,Solvent=Water) 
+EOF
+
+    echo "[ACTION] Running SPE for $base_name"
+    g16 < "$spe_gjf" > "$spe_log"
+
+    if grep -q "Normal termination" "$spe_log"; then
+        echo "[INFO] SPE completed for $base_name."
+    else
+        echo "[ERROR] SPE failed for $base_name."
+    fi
+done
+
+# ── Copy results back ─────────────────────────────────────────────────
+mkdir -p __RESULTS_DIRECTORY__/structure_$PBS_ARRAY_INDEX
+mv *.log *.chk *.gjf __RESULTS_DIRECTORY__/structure_$PBS_ARRAY_INDEX/
