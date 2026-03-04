@@ -86,7 +86,7 @@ molecules.csv → smiles_to_structure.py pair → autodft_pairs.py/.pbs
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/compchem-tools.git
+git clone https://github.com/datmdoan/compchem-tools.git
 cd compchem-tools
 pip install -r requirements.txt
 ```
