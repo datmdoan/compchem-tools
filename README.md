@@ -4,7 +4,7 @@ Python tools for high-throughput redox-potential screening of organic redox-acti
 
 ---
 
-## Cheminformatics (`smiles_tools/`)
+## RDKit Tools (`smiles_tools/`)
 
 ### Functional group enumeration
 
@@ -59,7 +59,7 @@ python -m smiles_tools.reduce_smiles --input molecules.csv --output reduced.csv 
 
 ## DFT workflow (`dft_workflow/`)
 
-Automates Gaussian 16 OPT+FREQ → SPE calculations on the CX3 HPC cluster and computes redox potentials vs SHE.
+Automates Gaussian 16 OPT+FREQ → SPE calculations on HPC cluster and computes redox potentials.
 
 ### Ion workflow (1e⁻ ET)
 
