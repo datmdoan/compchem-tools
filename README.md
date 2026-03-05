@@ -1,85 +1,120 @@
 # compchem-tools
 
-Python tools for high-throughput redox-potential screening of organic redox-active molecules — cheminformatics utilities and Gaussian 16 DFT automation on HPC.
+Python tools for high-throughput redox-potential screening of organic redox-active molecules — cheminformatics utilities and automated Gaussian 16 DFT on HPC.
 
 ---
 
-## RDKit Tools (`smiles_tools/`)
+## RDKit tools (`smiles_tools/`)
 
 ### Functional group enumeration
 
-Generates libraries of functionalised derivatives from backbone SMILES.
+Build combinatorial libraries by attaching functional groups to molecular backbones.
 
+**CLI:**
+```bash
+# single substitution — one FG per position per molecule
+python -m smiles_tools.enumerate \
+    --backbones "c1ccc2c(c1)Nc3ccccc3S2" \
+    --fg Cl "[OH]" "N(C)(C)" "C#N" \
+    --mode single \
+    --output derivatives.csv
+
+# multi substitution — all combinations across positions
+python -m smiles_tools.enumerate \
+    --backbones "c1ccc2c(c1)Nc3ccccc3S2" \
+    --fg Cl "[OH]" \
+    --mode multi \
+    --output multi_derivatives.csv
+
+# targeted — specific FGs at specific atom indices
+python -m smiles_tools.enumerate \
+    --backbones "c1ccc2c(c1)Nc3ccccc3S2" \
+    --mode targeted \
+    --position-map '{"1": ["Cl", "[OH]"], "6": ["N(C)(C)"]}' \
+    --output targeted.csv
+```
+
+**Python:**
 ```python
 from smiles_tools import enumerate_library
 
 df = enumerate_library(
     backbones=["c1ccc2c(c1)Nc3ccccc3S2"],
     functional_groups=["Cl", "[OH]", "N(C)(C)", "C#N"],
-    mode="single",   # or "multi", "targeted"
+    mode="single",
 )
 ```
 
-Three enumeration modes:
-- **single** — one FG per molecule per position
-- **multi** — all combinations of FGs across positions
-- **targeted** — specify which FGs go at which positions
+### Reduced SMILES generation
 
-```python
-# targeted example: position 1 gets Cl or OH, position 6 gets N(C)(C)
-df = enumerate_library(
-    backbones=["c1ccc2c(c1)Nc3ccccc3S2"],
-    mode="targeted",
-    position_map={1: ["Cl", "[OH]"], 6: ["N(C)(C)"]},
-)
-```
+Generates reduced (hydrogenated) SMILES from oxidised forms — supports phenazines, alloxazines and quinones.
 
-Or via the CLI:
+**CLI:**
 ```bash
-python -m smiles_tools.enumerate --backbones "c1ccc2c(c1)Nc3ccccc3S2" \
-    --fg Cl "[OH]" "N(C)(C)" --mode single --output derivatives.csv
+python -m smiles_tools.reduce_smiles \
+    --input molecules.csv \
+    --output reduced.csv \
+    --type quinone \
+    --smiles-col SMILES
 ```
 
-### Redox SMILES generation
-
-Generate reduced (hydrogenated) SMILES for phenazines, alloxazines and quinones.
-
+**Python:**
 ```python
 from smiles_tools import reduce_smiles
-
 reduced = reduce_smiles("c1ccc2nc3ccccc3nc2c1", molecule_type="phenazine")
-```
-
-```bash
-python -m smiles_tools.reduce_smiles --input molecules.csv --output reduced.csv \
-    --type quinone --smiles-col SMILES
 ```
 
 ---
 
 ## DFT workflow (`dft_workflow/`)
 
-Automates Gaussian 16 OPT+FREQ → SPE calculations on HPC cluster and computes redox potentials.
+Automated Gaussian 16 pipeline on HPC (PBS scheduler) for computing redox potentials.
 
-### Ion workflow (1e⁻ ET)
-
-E⁰ for **M⁺ + e⁻ → M**
+### Pipeline
 
 ```
-molecules.csv → smiles_to_structure.py ion → autodft_ions.py/.pbs
-→ extract_dft.py ion → process_redox_1e.py → redox_results.csv
+autodft launcher → conformer generation (ETKDG/MMFF94) → OPT+FREQ (M062X/6-31++G(d,p))
+→ convergence check → resubmission (up to 3×) or B3LYP fallback
+→ SPE (M062X/6-31++G(d,p), SMD water) → extract energies → compute E⁰
+```
+
+The launcher (`autodft_ions.py` or `autodft_pairs.py`) reads the input CSV, creates structure folders, and submits a PBS array job. Everything from conformer generation through to SPE runs automatically inside each PBS task — no manual intervention after submission. Once jobs finish, run `extract_dft.py` then `process_redox_1e.py` or `process_redox_2e.py` to get redox potentials.
+
+### Ion workflow (1e⁻ electron transfer)
+
+Calculates E⁰ for **M → M⁺ + e⁻** from a CSV with a `SMILES` column.
+
+```bash
+# 1. Launch
+python autodft_ions.py
+
+# 2. Wait for PBS jobs to finish
+
+# 3. Extract energies from Gaussian log files
+python extract_dft.py ion --base-dir ./structures --output extracted.csv
+
+# 4. Compute 1e⁻ redox potentials
+python process_redox_1e.py --input extracted.csv --output redox_1e.csv
 ```
 
 ### Neutral-pair workflow (2e⁻ PCET)
 
-E⁰ for **Ox + 2H⁺ + 2e⁻ → Red**
+Calculates E⁰ for **Ox + 2H⁺ + 2e⁻ → Red** from a CSV with `oxidised_smiles` and `reduced_smiles` columns. Each molecule gets two PBS tasks (odd index = oxidised, even = reduced).
 
-```
-molecules.csv → smiles_to_structure.py pair → autodft_pairs.py/.pbs
-→ extract_dft.py pair → process_redox_2e.py → redox_results.csv
+```bash
+# 1. Launch
+python autodft_pairs.py
+
+# 2. Wait for PBS jobs to finish
+
+# 3. Extract energies from Gaussian log files
+python extract_dft.py pair --base-dir ./structures --output extracted.csv
+
+# 4. Compute 2e⁻ redox potentials
+python process_redox_2e.py --input extracted.csv --output redox_2e.csv
 ```
 
-**Gaussian settings:** M062X/6-31++G(d,p), SMD water
+See `example_files/` for sample input CSVs and a worked phenazine example.
 
 ---
 
@@ -91,7 +126,7 @@ cd compchem-tools
 pip install -r requirements.txt
 ```
 
-Requires Python ≥ 3.9. Gaussian 16 and a PBS scheduler are needed for the DFT workflow only.
+Python ≥ 3.9. Gaussian 16 and a PBS scheduler are needed for the DFT workflow only.
 
 ---
 
