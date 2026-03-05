@@ -1,6 +1,6 @@
 # compchem-tools
 
-Python tools for high-throughput redox-potential screening of organic redox-active molecules — cheminformatics utilities and automated Gaussian 16 DFT on HPC.
+Python tools for high-throughput redox-potential screening of organic redox-active molecules — RDKit utilities and automated Gaussian 16 DFT on HPC.
 
 ---
 
@@ -78,7 +78,7 @@ autodft launcher → conformer generation (ETKDG/MMFF94) → OPT+FREQ (M062X/6-3
 → SPE (M062X/6-31++G(d,p), SMD water) → extract energies → compute E⁰
 ```
 
-The launcher (`autodft_ions.py` or `autodft_pairs.py`) reads the input CSV, creates structure folders, and submits a PBS array job. Everything from conformer generation through to SPE runs automatically inside each PBS task — no manual intervention after submission. Once jobs finish, run `extract_dft.py` then `process_redox_1e.py` or `process_redox_2e.py` to get redox potentials.
+The launcher (`autodft_ions.py` or `autodft_pairs.py`) reads the input CSV, creates structure folders, and submits a PBS array job. Everything from conformer generation through to SPE runs automatically inside each PBS task. Once the jobs finish, run `extract_dft.py` then `process_redox_1e.py` or `process_redox_2e.py` to get redox potentials.
 
 ### Ion workflow (1e⁻ electron transfer)
 
