@@ -121,8 +121,6 @@ See `example_files/` for sample input CSVs and a worked phenazine example.
 ## Installation
 
 ```bash
-git clone https://github.com/datmdoan/compchem-tools.git
-cd compchem-tools
 pip install -r requirements.txt
 ```
 
